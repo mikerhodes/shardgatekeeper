@@ -2,11 +2,12 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"sync"
 	"time"
 )
 
-func client(backend *Backend, workC chan bool, clientId int, wg *sync.WaitGroup) {
+func readClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
@@ -20,11 +21,37 @@ func client(backend *Backend, workC chan bool, clientId int, wg *sync.WaitGroup)
 				break
 			}
 			// simulate work
-			backend.Get(GetRequest{id: "foo"})
+			log.Println(shard.Get(GetRequest{id: "foo"}))
+		}
+	}
+}
+func writeClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	// log.Printf("[%d] client started", clientId)
+	// defer log.Printf("[%d] client stopped", clientId)
+
+	// Now loop on the channel that tells us to do work
+	for workC != nil {
+		select {
+		case _, ok := <-workC:
+			if !ok {
+				workC = nil
+				break
+			}
+			// simulate work - read/modify/update
+			resp := shard.Get(GetRequest{id: "foo"})
+			if resp.code == http.StatusNotFound {
+				log.Println(shard.Set(SetRequest{id: "foo", rev: 0}))
+			} else {
+				log.Println(shard.Set(SetRequest{id: "foo", rev: resp.rev}))
+			}
 		}
 	}
 }
 func main() {
+
+	// TODO now we have a backend, need to make the intermediary work mediation thing
+	// that we can swap around. Would need to wrap around the backend.
 
 	var jobsPerSecond float64 = 500
 	seconds := 2
@@ -33,7 +60,7 @@ func main() {
 
 	// This needs to be (workerSleep / tickerSleep) + 1
 	// to avoid drops.
-	workers := 1000
+	workers := 2
 
 	log.Printf("seconds:       %d", seconds)
 	log.Printf("jobsPerSecond: %f", jobsPerSecond)
@@ -41,7 +68,7 @@ func main() {
 	log.Printf("tickerSleep:   %s", tickerSleep)
 	log.Printf("workers:       %d", workers)
 
-	backend := &Backend{
+	shard := &Shard{
 		store: make(map[string]int64),
 	}
 	workC := make(chan bool)
@@ -49,7 +76,11 @@ func main() {
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go client(backend, workC, i, &wg)
+		go readClient(shard, workC, i, &wg)
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go writeClient(shard, workC, i, &wg)
 	}
 
 	ticker := time.NewTicker(tickerSleep)
@@ -105,7 +136,7 @@ type Response struct {
 	id   string
 	rev  int64
 }
-type Backend struct {
+type Shard struct {
 	// We assume that the get/set in the map is fast enough we can just use a naive lock
 	// given we have a millisecond sleep in there.
 	m sync.Mutex
@@ -117,45 +148,55 @@ type Backend struct {
 const GetSleep time.Duration = 1 * time.Millisecond
 const SetSleep time.Duration = 5 * time.Millisecond
 
-func (b *Backend) Get(req GetRequest) Response {
+func (b *Shard) Get(req GetRequest) Response {
 	time.Sleep(GetSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
 	if rev, ok := b.store[req.id]; ok {
 		return Response{
-			code: 200,
+			code: http.StatusOK,
 			id:   req.id,
 			rev:  rev,
 		}
 	} else {
 		return Response{
-			code: 404,
+			code: http.StatusNotFound,
 		}
 	}
 }
-func (b *Backend) Set(req SetRequest) Response {
+func (b *Shard) Set(req SetRequest) Response {
 	time.Sleep(SetSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
-	if rev, ok := b.store[req.id]; ok {
-		if req.rev == rev {
-			// make a new rev
-			newRev := rev + 1
-			b.store[req.id] = newRev
-			return Response{
-				code: 200,
-				id:   req.id,
-				rev:  newRev,
-			}
-		} else {
-			return Response{
-				code: 409,
-			}
+	rev, ok := b.store[req.id]
 
+	if ok && req.rev == rev {
+		// Write accepted for existing doc
+		// make a new rev
+		newRev := rev + 1
+		b.store[req.id] = newRev
+		return Response{
+			code: http.StatusCreated,
+			id:   req.id,
+			rev:  newRev,
+		}
+	} else if !ok && req.rev == 0 {
+		// Write accepted for new doc if rev 0
+		b.store[req.id] = 1
+		return Response{
+			code: http.StatusCreated,
+			id:   req.id,
+			rev:  1,
+		}
+	} else if ok && req.rev != rev {
+		// Write not accepted for existing doc
+		return Response{
+			code: http.StatusConflict,
 		}
 	} else {
+		// Doc not found, and rev not 0.
 		return Response{
-			code: 404,
+			code: http.StatusNotFound,
 		}
 	}
 
