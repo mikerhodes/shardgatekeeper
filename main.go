@@ -21,7 +21,12 @@ func readClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup)
 				break
 			}
 			// simulate work
-			log.Println(shard.Get(GetRequest{id: "foo"}))
+			req := &GetRequest{
+				id:    "foo",
+				respC: make(chan Response, 1),
+			}
+			shard.Get(req)
+			log.Println(<-req.respC)
 		}
 	}
 }
@@ -39,12 +44,27 @@ func writeClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup
 				break
 			}
 			// simulate work - read/modify/update
-			resp := shard.Get(GetRequest{id: "foo"})
-			if resp.code == http.StatusNotFound {
-				log.Println(shard.Set(SetRequest{id: "foo", rev: 0}))
-			} else {
-				log.Println(shard.Set(SetRequest{id: "foo", rev: resp.rev}))
+			get := &GetRequest{
+				id:    "foo",
+				respC: make(chan Response, 1),
 			}
+			shard.Get(get)
+			resp := <-get.respC
+
+			// If the doc exists, get its rev for
+			// the update.
+			revId := int64(0)
+			if resp.code == http.StatusOK {
+				revId = resp.rev
+			}
+
+			set := SetRequest{
+				id:    "foo",
+				rev:   revId,
+				respC: make(chan Response, 1),
+			}
+			shard.Set(set)
+			log.Println(<-set.respC)
 		}
 	}
 }
@@ -60,13 +80,15 @@ func main() {
 
 	// This needs to be (workerSleep / tickerSleep) + 1
 	// to avoid drops.
-	workers := 2
+	readWorkers := 2
+	writeWorkers := 2
 
 	log.Printf("seconds:       %d", seconds)
 	log.Printf("jobsPerSecond: %f", jobsPerSecond)
 	log.Printf("(total jobs    %d)", seconds*int(jobsPerSecond))
 	log.Printf("tickerSleep:   %s", tickerSleep)
-	log.Printf("workers:       %d", workers)
+	log.Printf("read workers:  %d", readWorkers)
+	log.Printf("write workers: %d", writeWorkers)
 
 	shard := &Shard{
 		store: make(map[string]int64),
@@ -74,11 +96,11 @@ func main() {
 	workC := make(chan bool)
 	wg := sync.WaitGroup{}
 
-	for i := 0; i < workers; i++ {
+	for i := 0; i < readWorkers; i++ {
 		wg.Add(1)
 		go readClient(shard, workC, i, &wg)
 	}
-	for i := 0; i < workers; i++ {
+	for i := 0; i < writeWorkers; i++ {
 		wg.Add(1)
 		go writeClient(shard, workC, i, &wg)
 	}
@@ -125,11 +147,13 @@ func main() {
 }
 
 type GetRequest struct {
-	id string
+	id    string
+	respC chan Response
 }
 type SetRequest struct {
-	id  string
-	rev int64
+	id    string
+	rev   int64
+	respC chan Response
 }
 type Response struct {
 	code int
@@ -148,23 +172,23 @@ type Shard struct {
 const GetSleep time.Duration = 1 * time.Millisecond
 const SetSleep time.Duration = 5 * time.Millisecond
 
-func (b *Shard) Get(req GetRequest) Response {
+func (b *Shard) Get(req *GetRequest) {
 	time.Sleep(GetSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
 	if rev, ok := b.store[req.id]; ok {
-		return Response{
+		req.respC <- Response{
 			code: http.StatusOK,
 			id:   req.id,
 			rev:  rev,
 		}
 	} else {
-		return Response{
+		req.respC <- Response{
 			code: http.StatusNotFound,
 		}
 	}
 }
-func (b *Shard) Set(req SetRequest) Response {
+func (b *Shard) Set(req SetRequest) {
 	time.Sleep(SetSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
@@ -175,7 +199,7 @@ func (b *Shard) Set(req SetRequest) Response {
 		// make a new rev
 		newRev := rev + 1
 		b.store[req.id] = newRev
-		return Response{
+		req.respC <- Response{
 			code: http.StatusCreated,
 			id:   req.id,
 			rev:  newRev,
@@ -183,19 +207,19 @@ func (b *Shard) Set(req SetRequest) Response {
 	} else if !ok && req.rev == 0 {
 		// Write accepted for new doc if rev 0
 		b.store[req.id] = 1
-		return Response{
+		req.respC <- Response{
 			code: http.StatusCreated,
 			id:   req.id,
 			rev:  1,
 		}
 	} else if ok && req.rev != rev {
 		// Write not accepted for existing doc
-		return Response{
+		req.respC <- Response{
 			code: http.StatusConflict,
 		}
 	} else {
 		// Doc not found, and rev not 0.
-		return Response{
+		req.respC <- Response{
 			code: http.StatusNotFound,
 		}
 	}
