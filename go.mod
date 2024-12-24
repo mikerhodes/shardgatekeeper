@@ -1,4 +1,4 @@
-module github.com/mikerhodes/openworld
+module github.com/mikerhodes/shardgatekeeper
 
 go 1.23.3
 
