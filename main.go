@@ -27,8 +27,7 @@ func updateR(r *clientResult, resp Response) {
 	}
 }
 
-func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int, wg *sync.WaitGroup) {
-	defer wg.Done()
+func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int) {
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
 
@@ -49,15 +48,14 @@ func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clien
 			}
 			shard.Get(req)
 			resp := <-req.respC
-			log.Println(resp)
+			// log.Println(resp)
 
 			updateR(&r, resp)
 		}
 	}
 	resC <- r
 }
-func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int, wg *sync.WaitGroup) {
-	defer wg.Done()
+func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int) {
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
 
@@ -93,6 +91,7 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 			}
 			shard.Set(set)
 			resp = <-set.respC
+			// log.Println(resp)
 
 			// For now only record the status of writes
 			updateR(&r, resp)
@@ -129,18 +128,15 @@ func main() {
 	}
 	workC := make(chan bool)
 	resC := make(chan clientResult, readWorkers+writeWorkers)
-	wg := sync.WaitGroup{}
 
 	clientId := 0
 	for i := 0; i < readWorkers; i++ {
-		wg.Add(1)
 		clientId += 1
-		go readClient(shard, workC, resC, clientId, &wg)
+		go readClient(shard, workC, resC, clientId)
 	}
 	for i := 0; i < writeWorkers; i++ {
-		wg.Add(1)
 		clientId += 1
-		go writeClient(shard, workC, resC, clientId, &wg)
+		go writeClient(shard, workC, resC, clientId)
 	}
 
 	ticker := time.NewTicker(tickerSleep)
@@ -158,12 +154,9 @@ func main() {
 		select {
 		case <-ticker.C:
 			submitted += 1
-			// log.Println("sending work")
-			// log.Println("Current time: ", t)
 			select {
 			case workC <- true:
 				// message sent
-				// log.Println("sent work")
 			default:
 				// message dropped
 				dropped += 1
@@ -175,7 +168,7 @@ func main() {
 
 	close(workC)
 
-	wg.Wait()
+	log.Println("======================")
 
 	for i := 0; i < readWorkers+writeWorkers; i++ {
 		result := <-resC
@@ -183,7 +176,6 @@ func main() {
 	}
 	close(resC)
 
-	log.Println("======================")
 	log.Printf("Time taken: %s", time.Now().Sub(start))
 	log.Printf("Total submitted work: %d", submitted)
 	log.Printf("Total dropped work:   %d", dropped)
