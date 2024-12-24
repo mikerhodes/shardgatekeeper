@@ -203,27 +203,20 @@ func (b *Shard) Set(req SetRequest) {
 	time.Sleep(SetSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
-	rev, ok := b.store[req.id]
+	currRev, found := b.store[req.id]
 
-	if ok && req.rev == rev {
+	if (found && req.rev == currRev) || (!found && req.rev == 0) {
 		// Write accepted for existing doc
+		// Write accepted for new doc if rev 0
 		// make a new rev
-		newRev := rev + 1
+		newRev := req.rev + 1
 		b.store[req.id] = newRev
 		req.respC <- Response{
 			code: http.StatusCreated,
 			id:   req.id,
 			rev:  newRev,
 		}
-	} else if !ok && req.rev == 0 {
-		// Write accepted for new doc if rev 0
-		b.store[req.id] = 1
-		req.respC <- Response{
-			code: http.StatusCreated,
-			id:   req.id,
-			rev:  1,
-		}
-	} else if ok && req.rev != rev {
+	} else if found && req.rev != currRev {
 		// Write not accepted for existing doc
 		req.respC <- Response{
 			code: http.StatusConflict,
