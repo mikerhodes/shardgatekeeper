@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"time"
@@ -10,53 +11,74 @@ import (
 
 func main() {
 
-	var jobsPerSecond float64 = 5000
-	seconds := 1
-	runTime := time.Duration(seconds) * time.Second
+	gatekeeper := flag.String("g", "serial", "gatekeeper: null, serial")
+	jobsPerSecond := flag.Float64("j", 1000, "jobs per second target")
+	readWorkers := flag.Int("r", 5, "read worker goroutines")
+	writeWorkers := flag.Int("w", 2, "write worker goroutines")
+	seconds := flag.Int("s", 1, "duration of test in seconds")
+	flag.Parse()
 
-	tickerSleep := time.Duration(float64(1*time.Second) / jobsPerSecond)
+	// TODO have seconds be a parsed time string and figure out
+	//      how to calculate the totalJobs from that?
 
-	// This needs to be (workerSleep / tickerSleep) + 1
-	// to avoid drops.
-	readWorkers := 10
-	writeWorkers := 5
+	runTime := time.Duration(*seconds) * time.Second
 
-	log.Printf("seconds:       %d", seconds)
-	log.Printf("jobsPerSecond: %f", jobsPerSecond)
-	log.Printf("(total jobs    %d)", seconds*int(jobsPerSecond))
+	tickerSleep := time.Duration(float64(1*time.Second) / *jobsPerSecond)
+
+	log.Printf("seconds:       %d", *seconds)
+	log.Printf("jobsPerSecond: %f", *jobsPerSecond)
+	log.Printf("(total jobs    %d)", *seconds*int(*jobsPerSecond))
 	log.Printf("tickerSleep:   %s", tickerSleep)
-	log.Printf("read workers:  %d", readWorkers)
-	log.Printf("write workers: %d", writeWorkers)
+	log.Printf("read workers:  %d", *readWorkers)
+	log.Printf("write workers: %d", *writeWorkers)
 
 	// Our backend mock shard.
 	shard := &Shard{
 		store: make(map[string]int64),
 	}
 
-	// Null case, read/write direct to shard as much
-	// paralell as you can.
-	// gk := shard
-
-	// Serial Gateway -- for now make the queue really big.
-	queue, _ := blockingQueues.NewArrayBlockingQueue(10_000_000)
-	gk := &SerialGatekeeper{
-		queue: queue,
-		s:     shard,
+	// The Gatekeeper defines how we are allowing reads and writes
+	// to be send to the shard. Eg, the SerialGatekeeper puts all
+	// the client read/writes into a single queue and executes them
+	// in the order they were added to that queue.
+	var gk Gatekeeper
+	switch *gatekeeper {
+	case "null":
+		// Null case, read/write direct to shard. While each read or
+		// write will get a time.Sleep and so take a while, there can
+		// be thousands in flight at a time if you have enough workers.
+		// And the actual read/write on the shard's backing map is
+		// super-fast, even with the mutex protecting it. It can handle
+		// over 200,000 operations a second with enough workers.
+		// This mostly just tests that, with enough workers, we can
+		// achieve higher throughput than we need to do this simulation,
+		// the the backend shouldn't be a bottleneck.
+		gk = shard
+	case "serial":
+		// Serial Gateway -- for now make the queue really big.
+		queue, _ := blockingQueues.NewArrayBlockingQueue(10_000_000)
+		gk = &SerialGatekeeper{
+			queue: queue,
+			s:     shard,
+		}
+		go gk.(*SerialGatekeeper).Run()
+	default:
+		panic("Bad gatekeeper")
 	}
-	go gk.Run()
 
+	// Channel for letting workers new they should work
 	workC := make(chan bool)
 
 	// We expect one result from each of the read and write workers
-	resC := make(chan clientResult, readWorkers+writeWorkers)
+	resC := make(chan clientResult, *readWorkers+*writeWorkers)
 
 	// Clients exit when workC is closed.
 	clientId := 0
-	for i := 0; i < readWorkers; i++ {
+	for i := 0; i < *readWorkers; i++ {
 		clientId += 1
 		go readClient(gk, workC, resC, clientId)
 	}
-	for i := 0; i < writeWorkers; i++ {
+	for i := 0; i < *writeWorkers; i++ {
 		clientId += 1
 		go writeClient(gk, workC, resC, clientId)
 	}
@@ -92,7 +114,7 @@ func main() {
 
 	log.Println("======================")
 
-	for i := 0; i < readWorkers+writeWorkers; i++ {
+	for i := 0; i < *readWorkers+*writeWorkers; i++ {
 		result := <-resC
 		log.Printf("%+v", result)
 	}
