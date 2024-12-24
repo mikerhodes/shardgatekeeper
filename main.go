@@ -7,10 +7,16 @@ import (
 	"time"
 )
 
-func readClient(shard Gatekeeper, workC chan bool, clientId int, wg *sync.WaitGroup) {
+type clientResult struct {
+	clientId, total, statusOK, statusNotFound, statusAccepted, statusConflict, statusUnknown int64
+}
+
+func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
+
+	r := clientResult{clientId: int64(clientId)}
 
 	// Now loop on the channel that tells us to do work
 	for workC != nil {
@@ -26,14 +32,32 @@ func readClient(shard Gatekeeper, workC chan bool, clientId int, wg *sync.WaitGr
 				respC: make(chan Response, 1),
 			}
 			shard.Get(req)
-			log.Println(<-req.respC)
+			resp := <-req.respC
+			log.Println(resp)
+
+			r.total += 1
+			switch resp.code {
+			case http.StatusOK:
+				r.statusOK += 1
+			case http.StatusNotFound:
+				r.statusNotFound += 1
+			case http.StatusCreated:
+				r.statusAccepted += 1
+			case http.StatusConflict:
+				r.statusAccepted += 1
+			default:
+				r.statusUnknown += 1
+			}
 		}
 	}
+	resC <- r
 }
-func writeClient(shard Gatekeeper, workC chan bool, clientId int, wg *sync.WaitGroup) {
+func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
+
+	r := clientResult{clientId: int64(clientId)}
 
 	// Now loop on the channel that tells us to do work
 	for workC != nil {
@@ -65,8 +89,24 @@ func writeClient(shard Gatekeeper, workC chan bool, clientId int, wg *sync.WaitG
 			}
 			shard.Set(set)
 			log.Println(<-set.respC)
+
+			// For now only record the status of writes
+			r.total += 1
+			switch resp.code {
+			case http.StatusOK:
+				r.statusOK += 1
+			case http.StatusNotFound:
+				r.statusNotFound += 1
+			case http.StatusCreated:
+				r.statusAccepted += 1
+			case http.StatusConflict:
+				r.statusAccepted += 1
+			default:
+				r.statusUnknown += 1
+			}
 		}
 	}
+	resC <- r
 }
 func main() {
 
@@ -96,15 +136,19 @@ func main() {
 		store: make(map[string]int64),
 	}
 	workC := make(chan bool)
+	resC := make(chan clientResult, readWorkers+writeWorkers)
 	wg := sync.WaitGroup{}
 
+	clientId := 0
 	for i := 0; i < readWorkers; i++ {
 		wg.Add(1)
-		go readClient(shard, workC, i, &wg)
+		clientId += 1
+		go readClient(shard, workC, resC, clientId, &wg)
 	}
 	for i := 0; i < writeWorkers; i++ {
 		wg.Add(1)
-		go writeClient(shard, workC, i, &wg)
+		clientId += 1
+		go writeClient(shard, workC, resC, clientId, &wg)
 	}
 
 	ticker := time.NewTicker(tickerSleep)
@@ -140,6 +184,12 @@ func main() {
 	close(workC)
 
 	wg.Wait()
+
+	for i := 0; i < readWorkers+writeWorkers; i++ {
+		result := <-resC
+		log.Printf("%+v", result)
+	}
+	close(resC)
 
 	log.Println("======================")
 	log.Printf("Time taken: %s", time.Now().Sub(start))
