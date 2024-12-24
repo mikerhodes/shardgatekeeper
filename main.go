@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func readClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup) {
+func readClient(shard Gatekeeper, workC chan bool, clientId int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
@@ -30,7 +30,7 @@ func readClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup)
 		}
 	}
 }
-func writeClient(shard *Shard, workC chan bool, clientId int, wg *sync.WaitGroup) {
+func writeClient(shard Gatekeeper, workC chan bool, clientId int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
@@ -72,6 +72,8 @@ func main() {
 
 	// TODO now we have a backend, need to make the intermediary work mediation thing
 	// that we can swap around. Would need to wrap around the backend.
+	// Maybe the Get/Set on the Shard is the right interface --- extract it, and implement
+	// it via the Get/Set strategies.
 
 	var jobsPerSecond float64 = 500
 	seconds := 2
@@ -143,7 +145,11 @@ func main() {
 	log.Printf("Time taken: %s", time.Now().Sub(start))
 	log.Printf("Total submitted work: %d", submitted)
 	log.Printf("Total dropped work:   %d", dropped)
+}
 
+type Gatekeeper interface {
+	Get(req *GetRequest)
+	Set(req SetRequest)
 }
 
 type GetRequest struct {
@@ -169,9 +175,11 @@ type Shard struct {
 	store map[string]int64
 }
 
+// GetSleep and SetSleep allow us to control the latency of operations.
 const GetSleep time.Duration = 1 * time.Millisecond
 const SetSleep time.Duration = 5 * time.Millisecond
 
+// Get retrieves a document by ID, sending the response on req.respC.
 func (b *Shard) Get(req *GetRequest) {
 	time.Sleep(GetSleep)
 	b.m.Lock()
@@ -188,6 +196,9 @@ func (b *Shard) Get(req *GetRequest) {
 		}
 	}
 }
+
+// Set creates or updates a document by ID, sending the response on req.respC.
+// To create a document, set rev to 0.
 func (b *Shard) Set(req SetRequest) {
 	time.Sleep(SetSleep)
 	b.m.Lock()
