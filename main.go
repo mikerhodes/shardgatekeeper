@@ -11,6 +11,22 @@ type clientResult struct {
 	clientId, total, statusOK, statusNotFound, statusAccepted, statusConflict, statusUnknown int64
 }
 
+func updateR(r *clientResult, resp Response) {
+	r.total += 1
+	switch resp.code {
+	case http.StatusOK:
+		r.statusOK += 1
+	case http.StatusNotFound:
+		r.statusNotFound += 1
+	case http.StatusCreated:
+		r.statusAccepted += 1
+	case http.StatusConflict:
+		r.statusAccepted += 1
+	default:
+		r.statusUnknown += 1
+	}
+}
+
 func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clientId int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	// log.Printf("[%d] client started", clientId)
@@ -35,19 +51,7 @@ func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clien
 			resp := <-req.respC
 			log.Println(resp)
 
-			r.total += 1
-			switch resp.code {
-			case http.StatusOK:
-				r.statusOK += 1
-			case http.StatusNotFound:
-				r.statusNotFound += 1
-			case http.StatusCreated:
-				r.statusAccepted += 1
-			case http.StatusConflict:
-				r.statusAccepted += 1
-			default:
-				r.statusUnknown += 1
-			}
+			updateR(&r, resp)
 		}
 	}
 	resC <- r
@@ -91,19 +95,7 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 			log.Println(<-set.respC)
 
 			// For now only record the status of writes
-			r.total += 1
-			switch resp.code {
-			case http.StatusOK:
-				r.statusOK += 1
-			case http.StatusNotFound:
-				r.statusNotFound += 1
-			case http.StatusCreated:
-				r.statusAccepted += 1
-			case http.StatusConflict:
-				r.statusAccepted += 1
-			default:
-				r.statusUnknown += 1
-			}
+			updateR(&r, resp)
 		}
 	}
 	resC <- r
