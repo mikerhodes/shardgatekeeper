@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/theodesp/blockingQueues"
 )
 
 type clientResult struct {
@@ -84,7 +86,7 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 				revId = resp.rev
 			}
 
-			set := SetRequest{
+			set := &SetRequest{
 				id:    "foo",
 				rev:   revId,
 				respC: make(chan Response, 1),
@@ -106,15 +108,16 @@ func main() {
 	// Maybe the Get/Set on the Shard is the right interface --- extract it, and implement
 	// it via the Get/Set strategies.
 
-	var jobsPerSecond float64 = 500
-	seconds := 2
+	var jobsPerSecond float64 = 5000
+	seconds := 1
+	runTime := time.Duration(seconds) * time.Second
 
 	tickerSleep := time.Duration(float64(1*time.Second) / jobsPerSecond)
 
 	// This needs to be (workerSleep / tickerSleep) + 1
 	// to avoid drops.
-	readWorkers := 2
-	writeWorkers := 2
+	readWorkers := 10
+	writeWorkers := 5
 
 	log.Printf("seconds:       %d", seconds)
 	log.Printf("jobsPerSecond: %f", jobsPerSecond)
@@ -126,23 +129,36 @@ func main() {
 	shard := &Shard{
 		store: make(map[string]int64),
 	}
+
+	// Null case, read/write direct to shard as much
+	// paralell as you can.
+	// gk := shard
+
+	// Serial Gateway
+	queue, _ := blockingQueues.NewArrayBlockingQueue(10000000)
+	gk := &SerialGatekeeper{
+		queue: queue,
+		s:     shard,
+	}
+	go gk.Run()
+
 	workC := make(chan bool)
 	resC := make(chan clientResult, readWorkers+writeWorkers)
 
 	clientId := 0
 	for i := 0; i < readWorkers; i++ {
 		clientId += 1
-		go readClient(shard, workC, resC, clientId)
+		go readClient(gk, workC, resC, clientId)
 	}
 	for i := 0; i < writeWorkers; i++ {
 		clientId += 1
-		go writeClient(shard, workC, resC, clientId)
+		go writeClient(gk, workC, resC, clientId)
 	}
 
 	ticker := time.NewTicker(tickerSleep)
 	defer ticker.Stop()
 
-	stopWorkT := time.NewTimer(2 * time.Second)
+	stopWorkT := time.NewTimer(runTime)
 
 	dropped := 0
 	submitted := 0
@@ -183,7 +199,35 @@ func main() {
 
 type Gatekeeper interface {
 	Get(req *GetRequest)
-	Set(req SetRequest)
+	Set(req *SetRequest)
+}
+
+type SerialGatekeeper struct {
+	queue *blockingQueues.BlockingQueue // GetRequest or SetRequest
+	m     sync.Mutex
+	s     *Shard
+}
+
+// Run should be called in a separate Go routine
+func (g *SerialGatekeeper) Run() {
+	for {
+		res, _ := g.queue.Get()
+		switch res.(type) {
+		case *GetRequest:
+			g.s.Get(res.(*GetRequest))
+		case *SetRequest:
+			g.s.Set(res.(*SetRequest))
+		default:
+			panic("unexpected queued item")
+		}
+	}
+}
+
+func (g *SerialGatekeeper) Get(req *GetRequest) {
+	g.queue.Put(req)
+}
+func (g *SerialGatekeeper) Set(req *SetRequest) {
+	g.queue.Put(req)
 }
 
 type GetRequest struct {
@@ -233,7 +277,7 @@ func (b *Shard) Get(req *GetRequest) {
 
 // Set creates or updates a document by ID, sending the response on req.respC.
 // To create a document, set rev to 0.
-func (b *Shard) Set(req SetRequest) {
+func (b *Shard) Set(req *SetRequest) {
 	time.Sleep(SetSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
