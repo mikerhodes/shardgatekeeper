@@ -8,7 +8,7 @@ import (
 )
 
 type clientResult struct {
-	clientId, total, statusOK, statusNotFound, statusAccepted, statusConflict, statusUnknown int64
+	clientId, total, statusOK, statusNotFound, statusCreated, statusConflict, statusUnknown int64
 }
 
 func updateR(r *clientResult, resp Response) {
@@ -19,9 +19,9 @@ func updateR(r *clientResult, resp Response) {
 	case http.StatusNotFound:
 		r.statusNotFound += 1
 	case http.StatusCreated:
-		r.statusAccepted += 1
+		r.statusCreated += 1
 	case http.StatusConflict:
-		r.statusAccepted += 1
+		r.statusConflict += 1
 	default:
 		r.statusUnknown += 1
 	}
@@ -92,7 +92,7 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 				respC: make(chan Response, 1),
 			}
 			shard.Set(set)
-			log.Println(<-set.respC)
+			resp = <-set.respC
 
 			// For now only record the status of writes
 			updateR(&r, resp)
