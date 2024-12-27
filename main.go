@@ -3,19 +3,24 @@ package main
 import (
 	"flag"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
 	"github.com/theodesp/blockingQueues"
 )
 
+const ClientTypeWriter = "writer"
+const ClientTypeReader = "reader"
+
 func main() {
 
 	gatekeeper := flag.String("g", "serial", "gatekeeper: null, serial")
 	jobsPerSecond := flag.Float64("j", 1000, "jobs per second target")
-	readWorkers := flag.Int("r", 5, "read worker goroutines")
-	writeWorkers := flag.Int("w", 2, "write worker goroutines")
+	readWorkers := flag.Int("r", 10, "read worker goroutines")
+	writeWorkers := flag.Int("w", 10, "write worker goroutines")
 	seconds := flag.Int("s", 1, "duration of test in seconds")
+	writePercentage := flag.Int("p", 20, "percentage writes")
 	flag.Parse()
 
 	// TODO have seconds be a parsed time string and figure out
@@ -25,12 +30,13 @@ func main() {
 
 	tickerSleep := time.Duration(float64(1*time.Second) / *jobsPerSecond)
 
-	log.Printf("seconds:       %d", *seconds)
-	log.Printf("jobsPerSecond: %f", *jobsPerSecond)
-	log.Printf("(total jobs    %d)", *seconds*int(*jobsPerSecond))
-	log.Printf("tickerSleep:   %s", tickerSleep)
-	log.Printf("read workers:  %d", *readWorkers)
-	log.Printf("write workers: %d", *writeWorkers)
+	log.Printf("seconds:         %d", *seconds)
+	log.Printf("jobsPerSecond:   %f", *jobsPerSecond)
+	log.Printf("(total jobs      %d)", *seconds*int(*jobsPerSecond))
+	log.Printf("tickerSleep:     %s", tickerSleep)
+	log.Printf("read workers:    %d", *readWorkers)
+	log.Printf("write workers:   %d", *writeWorkers)
+	log.Printf("writePercentage: %d", *writePercentage)
 
 	// Our backend mock shard.
 	shard := &Shard{
@@ -67,7 +73,8 @@ func main() {
 	}
 
 	// Channel for letting workers new they should work
-	workC := make(chan bool)
+	readWorkC := make(chan bool)
+	writeWorkC := make(chan bool)
 
 	// We expect one result from each of the read and write workers
 	resC := make(chan clientResult, *readWorkers+*writeWorkers)
@@ -76,11 +83,11 @@ func main() {
 	clientId := 0
 	for i := 0; i < *readWorkers; i++ {
 		clientId += 1
-		go readClient(gk, workC, resC, clientId)
+		go readClient(gk, readWorkC, resC, clientId)
 	}
 	for i := 0; i < *writeWorkers; i++ {
 		clientId += 1
-		go writeClient(gk, workC, resC, clientId)
+		go writeClient(gk, writeWorkC, resC, clientId)
 	}
 
 	ticker := time.NewTicker(tickerSleep)
@@ -93,13 +100,21 @@ func main() {
 
 	start := time.Now()
 
+	dw := NewDoWrite(*writePercentage)
+
 	stop := false
 	for !stop {
 		select {
 		case <-ticker.C:
+			var c chan bool
+			if dw.Next() {
+				c = writeWorkC
+			} else {
+				c = readWorkC
+			}
 			submitted += 1
 			select {
-			case workC <- true:
+			case c <- true:
 				// message sent
 			default:
 				// message dropped
@@ -110,19 +125,86 @@ func main() {
 		}
 	}
 
-	close(workC)
+	close(readWorkC)
+	close(writeWorkC)
 
 	log.Println("======================")
 
+	readerSummary := clientResult{clientType: ClientTypeReader}
+	writerSummary := clientResult{clientType: ClientTypeWriter}
+
+	// Create reader/writer summaries
 	for i := 0; i < *readWorkers+*writeWorkers; i++ {
 		result := <-resC
-		log.Printf("%+v", result)
+		// log.Printf("%+v", result)
+
+		var summary *clientResult
+		switch result.clientType {
+		case ClientTypeReader:
+			summary = &readerSummary
+		case ClientTypeWriter:
+			summary = &writerSummary
+		}
+		summary.statusConflict += result.statusConflict
+		summary.statusCreated += result.statusCreated
+		summary.statusNotFound += result.statusNotFound
+		summary.statusOK += result.statusOK
+		summary.statusUnknown += result.statusUnknown
+		summary.total = summary.total + result.total
 	}
 	close(resC)
 
+	log.Printf("Reader summary: %+v", readerSummary)
+	log.Printf("Writer summary: %+v", writerSummary)
 	log.Printf("Time taken: %s", time.Now().Sub(start))
 	log.Printf("Total submitted work: %d", submitted)
 	log.Printf("Total dropped work:   %d", dropped)
+}
+
+// DoWrite allows clients to know when to do a write
+// for a given percentage of writes.
+type DoWrite struct {
+	writeTable []bool
+	doWriteIdx int
+}
+
+// NewDoWrite creates a DoWrite that will return writes
+// writePercentable amount of the time. The passed write
+// percentage is clamped to 0 <= writePercentage <= 100.
+func NewDoWrite(writePercentage int) *DoWrite {
+	if writePercentage < 0 {
+		writePercentage = 0
+	}
+	if writePercentage > 100 {
+		writePercentage = 100
+	}
+	r := rand.New(rand.NewPCG(123, 456))
+
+	// Create a shuffled lookup table for when we
+	// should be doing writes. doWriteIdx indexes
+	// into this for each loop. Should be fast enough
+	// to keep up with most jobs per second.
+	doWrite := make([]bool, 100)
+	for i := 0; i < writePercentage; i++ {
+		doWrite[i] = true
+	}
+	r.Shuffle(len(doWrite), func(i, j int) {
+		doWrite[i], doWrite[j] = doWrite[j], doWrite[i]
+	})
+	return &DoWrite{
+		writeTable: doWrite,
+	}
+}
+
+// Next returns true when the caller should do a write
+// in order to meet the percentage writes goal.
+func (d *DoWrite) Next() bool {
+	r := d.writeTable[d.doWriteIdx]
+	d.doWriteIdx++
+	if d.doWriteIdx >= 100 {
+		d.doWriteIdx = 0
+	}
+	return r
 }
 
 // Gatekeeper mediates requests to a Shard.
@@ -133,6 +215,7 @@ type Gatekeeper interface {
 
 // clientResult stores statistics for a client run.
 type clientResult struct {
+	clientType                                                                              string
 	clientId, total, statusOK, statusNotFound, statusCreated, statusConflict, statusUnknown int64
 }
 
@@ -162,7 +245,7 @@ func readClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clien
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
 
-	r := clientResult{clientId: int64(clientId)}
+	r := clientResult{clientType: ClientTypeReader, clientId: int64(clientId)}
 
 	// Now loop on the channel that tells us to do work
 	for workC != nil {
@@ -197,7 +280,7 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 	// log.Printf("[%d] client started", clientId)
 	// defer log.Printf("[%d] client stopped", clientId)
 
-	r := clientResult{clientId: int64(clientId)}
+	r := clientResult{clientType: ClientTypeWriter, clientId: int64(clientId)}
 
 	// Now loop on the channel that tells us to do work
 	for workC != nil {
