@@ -225,6 +225,10 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 				revId = resp.rev
 			}
 
+			// Mock doing some work and/or network latency
+			// on the response.
+			time.Sleep(1 * time.Millisecond)
+
 			// Attempt to create/update the document
 			set := &SetRequest{
 				id:    "foo",
