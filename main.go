@@ -37,6 +37,7 @@ func main() {
 	log.Printf("read workers:    %d", *readWorkers)
 	log.Printf("write workers:   %d", *writeWorkers)
 	log.Printf("writePercentage: %d", *writePercentage)
+	log.Printf("gatekeeper:      %s", *gatekeeper)
 
 	// Our backend mock shard.
 	shard := &Shard{
@@ -59,7 +60,7 @@ func main() {
 		// This mostly just tests that, with enough workers, we can
 		// achieve higher throughput than we need to do this simulation,
 		// the the backend shouldn't be a bottleneck.
-		gk = shard
+		gk = &NullGatekeeper{shard: shard}
 	case "serial":
 		// Serial Gateway -- for now make the queue really big.
 		queue, _ := blockingQueues.NewArrayBlockingQueue(10_000_000)
@@ -67,7 +68,11 @@ func main() {
 			queue: queue,
 			s:     shard,
 		}
-		go gk.(*SerialGatekeeper).Run()
+		go gk.Start()
+	case "parallel":
+		// Serial Gateway -- for now make the queue really big.
+		gk = NewParallelGatekeeper(shard)
+		go gk.Start()
 	default:
 		panic("Bad gatekeeper")
 	}
@@ -159,6 +164,13 @@ func main() {
 	log.Printf("Time taken: %s", time.Now().Sub(start))
 	log.Printf("Total submitted work: %d", submitted)
 	log.Printf("Total dropped work:   %d", dropped)
+	log.Println("Throughput:")
+	log.Printf("Successful reads:     %d", readerSummary.statusOK)
+	log.Printf("Failed reads:         %d", readerSummary.statusNotFound)
+	log.Printf("Successful write %%:   %.2f",
+		float64(writerSummary.statusCreated)/float64(writerSummary.total))
+	log.Printf("Conflict write %%:     %.2f",
+		float64(writerSummary.statusConflict)/float64(writerSummary.total))
 }
 
 // DoWrite allows clients to know when to do a write
@@ -211,6 +223,7 @@ func (d *DoWrite) Next() bool {
 type Gatekeeper interface {
 	Get(req *GetRequest)
 	Set(req *SetRequest)
+	Start()
 }
 
 // clientResult stores statistics for a client run.
@@ -328,3 +341,17 @@ func writeClient(shard Gatekeeper, workC chan bool, resC chan clientResult, clie
 	}
 	resC <- r
 }
+
+// NullGatekeeper is a simple transparent pass through
+// gate keeper.
+type NullGatekeeper struct {
+	shard *Shard
+}
+
+func (g *NullGatekeeper) Get(r *GetRequest) {
+	g.shard.Get(r)
+}
+func (g *NullGatekeeper) Set(r *SetRequest) {
+	g.shard.Set(r)
+}
+func (g *NullGatekeeper) Start() {}

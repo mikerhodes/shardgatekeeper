@@ -1,8 +1,6 @@
 package main
 
 import (
-	"sync"
-
 	"github.com/theodesp/blockingQueues"
 )
 
@@ -11,12 +9,11 @@ import (
 // the order that they arrive.
 type SerialGatekeeper struct {
 	queue *blockingQueues.BlockingQueue // GetRequest or SetRequest
-	m     sync.Mutex
 	s     *Shard
 }
 
 // Run should be called in a separate Go routine
-func (g *SerialGatekeeper) Run() {
+func (g *SerialGatekeeper) Start() {
 	for {
 		res, _ := g.queue.Get()
 		switch res.(type) {
