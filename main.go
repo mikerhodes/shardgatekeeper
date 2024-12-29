@@ -21,10 +21,21 @@ func main() {
 	writeWorkers := flag.Int("w", 10, "write worker goroutines")
 	seconds := flag.Int("s", 1, "duration of test in seconds")
 	writePercentage := flag.Int("p", 20, "percentage writes")
+	getSleepF := flag.String("getSleep", "1ms", "duration to sleep during get")
+	setSleepF := flag.String("setSleep", "5ms", "duration to sleep during set")
 	flag.Parse()
 
 	// TODO have seconds be a parsed time string and figure out
 	//      how to calculate the totalJobs from that?
+
+	getSleep, err := time.ParseDuration(*getSleepF)
+	if err != nil {
+		panic("getSleep not valid time.Duration string")
+	}
+	setSleep, err := time.ParseDuration(*setSleepF)
+	if err != nil {
+		panic("setSleep not valid time.Duration string")
+	}
 
 	runTime := time.Duration(*seconds) * time.Second
 
@@ -38,10 +49,14 @@ func main() {
 	log.Printf("write workers:   %d", *writeWorkers)
 	log.Printf("writePercentage: %d", *writePercentage)
 	log.Printf("gatekeeper:      %s", *gatekeeper)
+	log.Printf("getSleep:        %s", getSleep)
+	log.Printf("setSleep:        %s", setSleep)
 
 	// Our backend mock shard.
 	shard := &Shard{
-		store: make(map[string]int64),
+		store:    make(map[string]int64),
+		getSleep: getSleep,
+		setSleep: setSleep,
 	}
 
 	// The Gatekeeper defines how we are allowing reads and writes
@@ -141,7 +156,8 @@ func main() {
 	close(readWorkC)
 	close(writeWorkC)
 
-	log.Println("======================")
+	log.Println("\n========== Submit complete ===================")
+	log.Println("... waiting for jobs to complete ...")
 
 	readerSummary := clientResult{clientType: ClientTypeReader}
 	writerSummary := clientResult{clientType: ClientTypeWriter}
@@ -167,9 +183,10 @@ func main() {
 	}
 	close(resC)
 
+	log.Println("\n======== Jobs complete; summary ==============")
 	log.Printf("Reader summary: %+v", readerSummary)
 	log.Printf("Writer summary: %+v", writerSummary)
-	log.Println("======================")
+	log.Println("\n======== Basic stats =========================")
 	log.Printf("Time taken: %s", time.Now().Sub(start))
 	log.Printf("Total submitted reads:     %d", submittedReads)
 	log.Printf("Total dropped reads:       %d", droppedReads)
@@ -179,8 +196,7 @@ func main() {
 	log.Printf("Total dropped writes:       %d", droppedWrites)
 	log.Printf("Accepted write throughput:  %.0f req/s",
 		float64(submittedWrites-droppedWrites)/time.Now().Sub(start).Seconds())
-	log.Println("======================")
-	log.Println("Client summaries:")
+	log.Println("\n========= Client summaries ===================")
 	log.Printf("Successful reads:     %d", readerSummary.statusOK)
 	log.Printf("Failed reads:         %d", readerSummary.statusNotFound)
 	log.Printf("Successful write %%:   %.2f",

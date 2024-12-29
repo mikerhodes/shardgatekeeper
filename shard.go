@@ -27,15 +27,14 @@ type Shard struct {
 
 	// Don't need a value, so just id -> rev
 	store map[string]int64
-}
 
-// GetSleep and SetSleep allow us to control the latency of operations.
-const GetSleep time.Duration = 1 * time.Millisecond
-const SetSleep time.Duration = 5 * time.Millisecond
+	// GetSleep and SetSleep allow us to control the latency of operations.
+	getSleep, setSleep time.Duration
+}
 
 // Get retrieves a document by ID, sending the response on req.respC.
 func (b *Shard) Get(req *GetRequest) {
-	time.Sleep(GetSleep)
+	time.Sleep(b.getSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
 	if rev, ok := b.store[req.id]; ok {
@@ -54,7 +53,7 @@ func (b *Shard) Get(req *GetRequest) {
 // Set creates or updates a document by ID, sending the response on req.respC.
 // To create a document, set rev to 0.
 func (b *Shard) Set(req *SetRequest) {
-	time.Sleep(SetSleep)
+	time.Sleep(b.setSleep)
 	b.m.Lock()
 	defer b.m.Unlock()
 	currRev, found := b.store[req.id]
