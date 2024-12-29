@@ -100,8 +100,10 @@ func main() {
 
 	stopWorkT := time.NewTimer(runTime)
 
-	dropped := 0
-	submitted := 0
+	droppedReads := 0
+	droppedWrites := 0
+	submittedWrites := 0
+	submittedReads := 0
 
 	start := time.Now()
 
@@ -112,18 +114,24 @@ func main() {
 		select {
 		case <-ticker.C:
 			var c chan bool
-			if dw.Next() {
+			write := dw.Next()
+			if write {
 				c = writeWorkC
+				submittedWrites += 1
 			} else {
 				c = readWorkC
+				submittedReads += 1
 			}
-			submitted += 1
 			select {
 			case c <- true:
 				// message sent
 			default:
 				// message dropped
-				dropped += 1
+				if write {
+					droppedWrites += 1
+				} else {
+					droppedReads += 1
+				}
 			}
 		case <-stopWorkT.C:
 			stop = true
@@ -161,10 +169,18 @@ func main() {
 
 	log.Printf("Reader summary: %+v", readerSummary)
 	log.Printf("Writer summary: %+v", writerSummary)
+	log.Println("======================")
 	log.Printf("Time taken: %s", time.Now().Sub(start))
-	log.Printf("Total submitted work: %d", submitted)
-	log.Printf("Total dropped work:   %d", dropped)
-	log.Println("Throughput:")
+	log.Printf("Total submitted reads:     %d", submittedReads)
+	log.Printf("Total dropped reads:       %d", droppedReads)
+	log.Printf("Accepted read throughput:  %.0f req/s",
+		float64(submittedReads-droppedReads)/time.Now().Sub(start).Seconds())
+	log.Printf("Total submitted writes:     %d", submittedWrites)
+	log.Printf("Total dropped writes:       %d", droppedWrites)
+	log.Printf("Accepted write throughput:  %.0f req/s",
+		float64(submittedWrites-droppedWrites)/time.Now().Sub(start).Seconds())
+	log.Println("======================")
+	log.Println("Client summaries:")
 	log.Printf("Successful reads:     %d", readerSummary.statusOK)
 	log.Printf("Failed reads:         %d", readerSummary.statusNotFound)
 	log.Printf("Successful write %%:   %.2f",
