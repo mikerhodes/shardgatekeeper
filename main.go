@@ -190,7 +190,7 @@ func NewDoWrite(writePercentage int) *DoWrite {
 	if writePercentage > 100 {
 		writePercentage = 100
 	}
-	r := rand.New(rand.NewPCG(123, 456))
+	// r := rand.New(rand.NewPCG(123, 456))
 
 	// Create a shuffled lookup table for when we
 	// should be doing writes. doWriteIdx indexes
@@ -200,7 +200,7 @@ func NewDoWrite(writePercentage int) *DoWrite {
 	for i := 0; i < writePercentage; i++ {
 		doWrite[i] = true
 	}
-	r.Shuffle(len(doWrite), func(i, j int) {
+	rand.Shuffle(len(doWrite), func(i, j int) {
 		doWrite[i], doWrite[j] = doWrite[j], doWrite[i]
 	})
 	return &DoWrite{
