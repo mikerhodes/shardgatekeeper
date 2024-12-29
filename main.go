@@ -244,8 +244,8 @@ type Gatekeeper interface {
 
 // clientResult stores statistics for a client run.
 type clientResult struct {
-	clientType                                                                              string
-	clientId, total, statusOK, statusNotFound, statusCreated, statusConflict, statusUnknown int64
+	clientType                                                                                                     string
+	clientId, total, statusOK, statusNotFound, statusCreated, statusConflict, statusTooManyRequests, statusUnknown int64
 }
 
 // updateR updates r using values from resp
@@ -260,6 +260,8 @@ func updateR(r *clientResult, resp Response) {
 		r.statusCreated += 1
 	case http.StatusConflict:
 		r.statusConflict += 1
+	case http.StatusTooManyRequests:
+		r.statusTooManyRequests += 1
 	default:
 		r.statusUnknown += 1
 	}
